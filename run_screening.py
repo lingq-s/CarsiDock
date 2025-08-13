@@ -76,7 +76,9 @@ def main(args):
             output_path = None
         outputs = docking(model, carsidock_pocket, init_mol_list, ligand_dict, pocket_dict, device=DEVICE,
                           output_path=output_path, num_threads=args.num_threads, lbfgsbsrv=lbfgsbsrv)
-        docked_mol.append(outputs['mol_list'][0])
+        if len(outputs['mol_list']) > 0:
+            docked_mol.append(outputs['mol_list'][0])
+    docked_mol = [Chem.RemoveHs(m) for m in docked_mol]
     ids, scores = scoring(rtms_pocket, docked_mol, rtms_model)
     if args.output_dir is not None:
         df = pd.DataFrame(zip(ids, scores), columns=["#code_ligand_num", "score"])
@@ -104,3 +106,4 @@ if __name__ == '__main__':
     parser.add_argument('--cuda_device_index', default=0, type=int, help="cuda device index")
     args = parser.parse_args()
     main(args)
+
