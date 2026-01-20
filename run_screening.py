@@ -56,7 +56,7 @@ def main(args):
     carsidock_pocket, _ = extract_carsidock_pocket(pocket_file, ligand_file)
     rtms_pocket = extract_pocket(pocket_file, positions, distance=10, del_water=True)
 
-    if args.ligands.endswith('.sdf'):
+    if args.ligands.endswith('.mol2'):
         ligands = read_mol(get_abs_path(args.ligands))
         data = ligands
     elif args.ligands.endswith('.txt'):
@@ -65,6 +65,30 @@ def main(args):
         data = smiles
     else:
         assert ValueError('only support .sdf or .txt file.')
+
+    input_basename = os.path.basename(args.ligands).split('.')[0]
+    score_filename = f"{input_basename}_score.dat"
+
+    #docked_mol = []
+    #invalid_count = 0
+    #for item in tqdm(data):
+#        try:
+#            init_mol_list = read_ligands(smiles=[item])[0] if type(item) is str else read_ligands([item])[0]
+#            torch.cuda.empty_cache()
+#            if args.output_dir:
+#                output_path = get_abs_path(args.output_dir, f'{init_mol_list[0].GetProp("_Name")}.sdf')
+#            else:
+#                output_path = None
+#            outputs = docking(model, carsidock_pocket, init_mol_list, ligand_dict, pocket_dict, device=DEVICE,
+#                              output_path=output_path, num_threads=args.num_threads, lbfgsbsrv=lbfgsbsrv)
+#            docked_mol.append(outputs['mol_list'][0])
+#        except(IndexError, AttributeError) as e:
+#            invalid_count += 1
+#            continue
+#    ids, scores = scoring(rtms_pocket, docked_mol, rtms_model)
+#    if args.output_dir is not None:
+#        df = pd.DataFrame(zip(ids, scores), columns=["#code_ligand_num", "score"])
+#        df.to_csv(f"{get_abs_path(args.output_dir)}/{score_filename}", index=False, sep="\t")
 
     docked_mol = []
     for item in tqdm(data):
@@ -76,9 +100,7 @@ def main(args):
             output_path = None
         outputs = docking(model, carsidock_pocket, init_mol_list, ligand_dict, pocket_dict, device=DEVICE,
                           output_path=output_path, num_threads=args.num_threads, lbfgsbsrv=lbfgsbsrv)
-        if len(outputs['mol_list']) > 0:
-            docked_mol.append(outputs['mol_list'][0])
-    docked_mol = [Chem.RemoveHs(m) for m in docked_mol]
+        docked_mol.append(outputs['mol_list'][0])
     ids, scores = scoring(rtms_pocket, docked_mol, rtms_model)
     if args.output_dir is not None:
         df = pd.DataFrame(zip(ids, scores), columns=["#code_ligand_num", "score"])
@@ -100,7 +122,7 @@ if __name__ == '__main__':
     parser.add_argument('--rtms_ckpt_path', default='checkpoints/rtmscore_model1.pth')
     parser.add_argument('--num_conformer', default=3, type=int,
                         help='number of initial conformer, resulting in num_conformer * num_conformer docking conformations.')
-    parser.add_argument('--num_threads', default=1, help='recommend 1')
+    parser.add_argument('--num_threads', default=1, type=int, help='recommend 1')
     parser.add_argument('--cuda_convert', action='store_true',
                         help='use cuda to accelerate distance matrix to coordinate.')
     parser.add_argument('--cuda_device_index', default=0, type=int, help="cuda device index")

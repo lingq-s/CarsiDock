@@ -122,3 +122,13 @@ lightning_logs
 # *.sdf
 *.ckpt
 exclude.list
+
+*.sdf
+*.pdb
+*.txt
+*.csv
+data/
+*.png
+*.jpg
+*.jpeg
+*.bak
