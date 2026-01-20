@@ -22,6 +22,17 @@ from src.utils.utils import get_abs_path, get_carsidock_model
 import pytorch_lightning as pl
 
 
+def safe_remove_hs(mol):
+    try:
+        # 先尝试标准去氢
+        mol = Chem.RemoveHs(mol, sanitize=False)
+        # 手动执行除Kekulize外的所有检查
+        Chem.SanitizeMol(mol, Chem.SANITIZE_ALL ^ Chem.SANITIZE_KEKULIZE)
+        return mol
+    except Exception:
+        # 如果失败，返回原始分子（带氢）
+        return mol
+
 def get_heavy_atom_positions(ligand_file):
     ligand = read_mol(ligand_file)
     if ligand is None:
@@ -32,7 +43,7 @@ def get_heavy_atom_positions(ligand_file):
     else:
         if ligand_file.endswith('.sdf'):
             ligand = ligand[0]
-        ligand = Chem.RemoveHs(ligand, sanitize=True, implicitOnly=True)
+        ligand = safe_remove_hs(ligand)
         positions = ligand.GetConformer().GetPositions()
     return positions
 
@@ -56,7 +67,7 @@ def main(args):
     carsidock_pocket, _ = extract_carsidock_pocket(pocket_file, ligand_file)
     rtms_pocket = extract_pocket(pocket_file, positions, distance=10, del_water=True)
 
-    if args.ligands.endswith('.mol2'):
+    if args.ligands.endswith('.sdf'):
         ligands = read_mol(get_abs_path(args.ligands))
         data = ligands
     elif args.ligands.endswith('.txt'):
@@ -91,21 +102,80 @@ def main(args):
 #        df.to_csv(f"{get_abs_path(args.output_dir)}/{score_filename}", index=False, sep="\t")
 
     docked_mol = []
-    for item in tqdm(data):
-        init_mol_list = read_ligands(smiles=[item])[0] if type(item) is str else read_ligands([item])[0]
-        torch.cuda.empty_cache()
-        if args.output_dir:
-            output_path = get_abs_path(args.output_dir, f'{init_mol_list[0].GetProp("_Name")}.sdf')
-        else:
-            output_path = None
-        outputs = docking(model, carsidock_pocket, init_mol_list, ligand_dict, pocket_dict, device=DEVICE,
-                          output_path=output_path, num_threads=args.num_threads, lbfgsbsrv=lbfgsbsrv)
-        docked_mol.append(outputs['mol_list'][0])
-    ids, scores = scoring(rtms_pocket, docked_mol, rtms_model)
-    if args.output_dir is not None:
-        df = pd.DataFrame(zip(ids, scores), columns=["#code_ligand_num", "score"])
-        df.to_csv(f"{get_abs_path(args.output_dir)}/score.dat", index=False, sep="\t")
+    invalid_count = 0
+    all_ids = []
+    all_scores = []
+    data = list(data)
 
+    # 生成动态文件名
+    input_basename = os.path.basename(args.ligands).split('.')[0]
+    score_filename = f"{input_basename}_score.dat"
+
+    # 设置每批的大小
+    batch_size = 1000
+
+    # 分批处理
+    for item in tqdm(data, desc="Processing"):
+        try:
+            init_mol_list = read_ligands(smiles=[item])[0] if type(item) is str else read_ligands([item])[0]
+            torch.cuda.empty_cache()
+            if args.output_dir:
+                output_path = get_abs_path(args.output_dir, f'{init_mol_list[0].GetProp("_Name")}.sdf')
+            else:
+                output_path = None
+            outputs = docking(
+                model, carsidock_pocket, init_mol_list, ligand_dict, pocket_dict, device=DEVICE,
+                output_path=output_path, num_threads=args.num_threads, lbfgsbsrv=lbfgsbsrv
+            )
+            docked_mol.append(outputs['mol_list'][0])
+        except (IndexError, AttributeError) as e:
+            invalid_count += 1
+            continue
+
+        # 对当前批次进行打分
+        if len(docked_mol) >= 1 and (len(docked_mol) - 1) % batch_size == 0:
+            batch = docked_mol[-batch_size:]
+            ids_batch, scores_batch = scoring(rtms_pocket, batch, rtms_model)
+
+            # 保存当前批次的临时结果（避免程序崩溃丢失所有数据）
+            batch_file = f"{input_basename}_batch_{len(docked_mol)//batch_size}_score.dat"
+            batch_df = pd.DataFrame({
+                "#code_ligand_num": ids_batch,
+                "score": scores_batch
+            })
+            batch_df.to_csv(
+                os.path.join(get_abs_path(args.output_dir), batch_file),
+                index=False,
+                sep="\t"
+            )
+
+            all_ids.extend(ids_batch)
+            all_scores.extend(scores_batch)
+
+    # 处理剩余分子
+    if (len(docked_mol) - 1) % batch_size != 0:
+        ids, scores = scoring(rtms_pocket, docked_mol[-(len(docked_mol)%batch_size):], rtms_model)
+        batch_df = pd.DataFrame({"#code_ligand_num": ids, "score": scores})
+        batch_file = f"{input_basename}_batch_final_score.dat"
+        try:
+            batch_df.to_csv(os.path.join(get_abs_path(args.output_dir), batch_file), sep="\t", index=False)
+        except Exceptions as e:
+            pass
+        all_ids.extend(ids)
+        all_scores.extend(scores)
+
+    # 最终合并所有批次的结果
+    if args.output_dir and (all_ids and all_scores):
+        final_df = pd.DataFrame({
+            "#code_ligand_num": all_ids,
+            "score": all_scores
+        })
+
+        output_path = os.path.join(get_abs_path(args.output_dir), score_filename)
+        final_df.to_csv(output_path, index=False, sep="\t")
+        print(f"Results saved to: {output_path}")
+
+    print(f"Total invalid molecules skipped: {invalid_count}")
 
 if __name__ == '__main__':
     pl.seed_everything(42)
@@ -128,4 +198,3 @@ if __name__ == '__main__':
     parser.add_argument('--cuda_device_index', default=0, type=int, help="cuda device index")
     args = parser.parse_args()
     main(args)
-
