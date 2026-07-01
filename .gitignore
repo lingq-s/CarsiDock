@@ -132,3 +132,9 @@ data/
 *.jpg
 *.jpeg
 *.bak
+inputs/
+test_data/
+screening/.ipynb_checkpoints/
+example_data/*_pocket.pdb
+inputs
+test_data
