@@ -24,10 +24,11 @@ from spyrmsd import rmsd, molecule
 # from func_timeout import func_set_timeout
 from pathlib import Path
 from rdkit.Chem.rdchem import Conformer
+from src.utils.chem_utils import safe_remove_hs
 
 def get_torsions(m, removeHs=True):
     if removeHs:
-        m = Chem.RemoveHs(m)
+        m = safe_remove_hs(m)
     torsionList = []
     torsionSmarts = "[!$(*#*)&!D1]-&!@[!$(*#*)&!D1]"
     torsionQuery = Chem.MolFromSmarts(torsionSmarts)
@@ -611,7 +612,15 @@ def save_sdf(mol_list, output_path):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with Chem.SDWriter(output_path) as w:
         for i, mol in enumerate(mol_list):
-            w.write(mol)
+            try:
+                w.write(mol)
+            except Exception as exc:
+                name = mol.GetProp('_Name') if mol.HasProp('_Name') else f'molecule_{i}'
+                try:
+                    Chem.SanitizeMol(mol, Chem.SANITIZE_ALL ^ Chem.SANITIZE_KEKULIZE)
+                    w.write(mol)
+                except Exception:
+                    print(f'Skipping SDF write for {name}: {exc}')
 
 
 def read_mol(mol_path, sanitize=True):

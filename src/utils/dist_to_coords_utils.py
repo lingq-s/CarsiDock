@@ -5,6 +5,7 @@ import torch
 import math
 from rdkit import Chem
 import networkx as nx
+from src.utils.chem_utils import safe_remove_hs
 
 
 def axis_angle_to_quaternion(axis_angle):
@@ -258,7 +259,7 @@ def gen_matrix_from_rot_vec(k, theta):
 
 
 def get_mask_rotate(mol, device='cpu'):
-    mol = Chem.RemoveHs(mol)
+    mol = safe_remove_hs(mol)
     G = nx.Graph()
     nodes = range(len(mol.GetAtoms()))
     edges = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mol.GetBonds()]

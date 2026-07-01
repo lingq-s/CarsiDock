@@ -16,6 +16,7 @@ from src.utils.conf_gen import gen_init_conf, get_torsions, single_conf_gen
 from src.utils.dist_to_coords_utils import modify_conformer, get_mask_rotate
 from src.utils.docking_utils import optimize_rotatable_bonds, prepare_log_data, add_coord, save_sdf, dock_with_gradient, \
     single_SF_loss, get_symmetry_rmsd, set_coord
+from src.utils.chem_utils import safe_remove_hs, safe_remove_all_hs
 
 
 def prepare_data_from_mol(mol_list, dictionary, prefix='mol', max_atoms=384, device='cuda'):
@@ -50,7 +51,7 @@ def prepare_data_from_mol(mol_list, dictionary, prefix='mol', max_atoms=384, dev
 
 class MultiProcess:
     def __init__(self, mol, pocket_coords, pocket_center, pi, mu, sigma, iterations=20000, early_stoping=5, **unused):
-        self.mol = Chem.RemoveHs(mol)
+        self.mol = safe_remove_hs(mol)
         self.pocket_coords = pocket_coords
         self.pocket_center = pocket_center
         self.pi = pi
@@ -204,6 +205,8 @@ class MultiProcess:
                 elif best_loss < 100 and seq in seqs:
                     with torch.no_grad():
                         best_coords = modify_conformer(seqs[seq], best_values, self.torsions, self.masks)
+                        if torch.isnan(best_coords).any() or torch.isinf(best_coords).any():
+                            continue
                         score = mdn_score(self.pi, self.mu, self.sigma, best_coords, self.pocket_coords).item()
                         best_coords = best_coords.cpu().data.numpy()
                     opt_mol = set_coord(self.mol, best_coords)
@@ -254,7 +257,12 @@ def mdn_score(pi, mu, sigma, predict_coords=None, pocket_coords=None, dist=None,
     dist_mask = dist < threshold
     normal = Normal(mu, sigma)
     # [BSZ, N, M, 10]
-    loglik = normal.log_prob(dist.unsqueeze(-1))
+    if torch.isnan(dist).any() or torch.isinf(dist).any():
+        return torch.tensor(-1e10, device=dist.device)
+    try:
+        loglik = normal.log_prob(dist.unsqueeze(-1))
+    except Exception:
+        return torch.tensor(-1e10, device=dist.device)
     logprob = loglik + torch.log(pi)
     # [BSZ, N, M]
     prob = logprob.exp().sum(-1)
@@ -274,7 +282,12 @@ def mdn_score_list(pi, mu, sigma, dist=None, threshold=5, reduction='sum'):
     dist_mask = dist < threshold
     normal = Normal(mu, sigma)
     # [BSZ, N, M, 10]
-    loglik = normal.log_prob(dist.unsqueeze(-1))
+    if torch.isnan(dist).any() or torch.isinf(dist).any():
+        return torch.tensor(-1e10, device=dist.device)
+    try:
+        loglik = normal.log_prob(dist.unsqueeze(-1))
+    except Exception:
+        return torch.tensor(-1e10, device=dist.device)
     logprob = loglik + torch.log(pi)
     # [BSZ, N, M]
     prob = logprob.exp().sum(-1)
@@ -296,9 +309,30 @@ def read_ligands(mol_list=None, smiles=None, num_gen_conf=100, num_use_conf=5):
         assert smiles is not None
         mol_list = [Chem.MolFromSmiles(smi) for smi in smiles]
         for mol in mol_list:
-            mol.SetProp('_Name', Chem.MolToInchiKey(mol))
-    mol_list = [Chem.RemoveAllHs(mol) for mol in mol_list if mol is not None]
-    total_mol_list = [gen_init_conf(mol, num_confs=num_use_conf) for mol in mol_list]
+            if mol is not None:
+                mol.SetProp('_Name', Chem.MolToInchiKey(mol))
+    valid_mol_list = []
+    for mol in mol_list:
+        if mol is None:
+            continue
+        name = mol.GetProp('_Name') if mol.HasProp('_Name') else '<unnamed>'
+        try:
+            clean_mol = safe_remove_all_hs(mol)
+            if clean_mol is None:
+                continue
+            valid_mol_list.append(clean_mol)
+        except Exception as exc:
+            print(f'Skipping molecule {name}: hydrogen removal failed: {exc}')
+
+    total_mol_list = []
+    for mol in valid_mol_list:
+        name = mol.GetProp('_Name') if mol.HasProp('_Name') else '<unnamed>'
+        try:
+            confs = gen_init_conf(mol, num_confs=num_use_conf)
+            if confs:
+                total_mol_list.append(confs)
+        except Exception as exc:
+            print(f'Failed to generate conformers for molecule {name}: {exc}')
     return total_mol_list
 
 

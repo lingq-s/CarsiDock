@@ -10,7 +10,6 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-from rdkit import Chem
 import multiprocessing as mp
 
 from tqdm import tqdm
@@ -18,20 +17,10 @@ from tqdm import tqdm
 from RTMScore.utils import scoring, get_rtmscore_model
 from src.utils.docking_inference_utils import read_ligands, docking
 from src.utils.docking_utils import extract_carsidock_pocket, read_mol, extract_pocket
+from src.utils.chem_utils import safe_remove_hs
 from src.utils.utils import get_abs_path, get_carsidock_model
 import pytorch_lightning as pl
 
-
-def safe_remove_hs(mol):
-    try:
-        # 先尝试标准去氢
-        mol = Chem.RemoveHs(mol, sanitize=False)
-        # 手动执行除Kekulize外的所有检查
-        Chem.SanitizeMol(mol, Chem.SANITIZE_ALL ^ Chem.SANITIZE_KEKULIZE)
-        return mol
-    except Exception:
-        # 如果失败，返回原始分子（带氢）
-        return mol
 
 def get_heavy_atom_positions(ligand_file):
     ligand = read_mol(ligand_file)

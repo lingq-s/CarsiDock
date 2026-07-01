@@ -11,6 +11,7 @@ from scipy.spatial.transform import Rotation
 from sklearn.cluster import KMeans
 from src.utils.dist_to_coords_utils import get_mask_rotate, modify_conformer
 from src.utils.docking_utils import set_coord
+from src.utils.chem_utils import safe_remove_hs, safe_remove_all_hs
 
 os.environ['OB_RANDOM_SEED'] = '42'
 
@@ -30,12 +31,12 @@ def single_conf_gen(tgt_mol, num_confs=1000, seed=42, mmff=False):
     #         AllChem.MMFFOptimizeMolecule(mol, confId=i)
     #     except:
     #         continue
-    mol = Chem.RemoveHs(mol)
+    mol = safe_remove_hs(mol)
     return mol
 
 
 def get_torsions(m):
-    m = Chem.RemoveHs(m)
+    m = safe_remove_hs(m)
     torsionList = []
     torsionSmarts = "[!$(*#*)&!D1]-&!@[!$(*#*)&!D1]"
     torsionQuery = Chem.MolFromSmarts(torsionSmarts)
@@ -84,7 +85,7 @@ def single_conf_gen_bonds(tgt_mol, num_confs=1000, seed=42):
     allconformers = AllChem.EmbedMultipleConfs(
         mol, numConfs=num_confs, randomSeed=seed, clearConfs=True, numThreads=40
     )
-    mol = Chem.RemoveHs(mol)
+    mol = safe_remove_hs(mol)
     # rotable_bonds = get_torsions(mol)
     # for i in range(len(allconformers)):
     #     np.random.seed(i)
@@ -112,7 +113,7 @@ def single_conf_gen_no_MMFF(tgt_mol, num_confs=1000, seed=42):
     allconformers = AllChem.EmbedMultipleConfs(
         mol, numConfs=num_confs, randomSeed=seed, clearConfs=True, numThreads=40
     )
-    mol = Chem.RemoveHs(mol)
+    mol = safe_remove_hs(mol)
     return mol
 
 
@@ -132,7 +133,7 @@ def obabel_gen(input_rdkit_mol, total_confs=10, num_classes=5):
     if os.path.exists(output_file):
         os.remove(input_file)
         os.remove(output_file)
-    mol_list = [Chem.RemoveAllHs(m) for m in sup]
+    mol_list = [safe_remove_all_hs(m) for m in sup if m is not None]
     coord_list = [m.GetConformer().GetPositions() for m in mol_list]
     new_coords = clustering(coord_list, num_classes)
     new_mol = mol_list[0]
@@ -141,14 +142,21 @@ def obabel_gen(input_rdkit_mol, total_confs=10, num_classes=5):
 
 
 def rdkit_gen(input_rdkit_mol, total_confs=10, num_classes=5):
-    Chem.rdmolops.AssignAtomChiralTagsFromStructure(input_rdkit_mol)
-    rdkit_mol = single_conf_gen(input_rdkit_mol, num_confs=total_confs, mmff=True)
-    rdkit_mol = Chem.RemoveAllHs(rdkit_mol)
+    try:
+        Chem.rdmolops.AssignAtomChiralTagsFromStructure(input_rdkit_mol)
+        rdkit_mol = single_conf_gen(input_rdkit_mol, num_confs=total_confs, mmff=True)
+        rdkit_mol = safe_remove_all_hs(rdkit_mol)
+    except Exception as exc:
+        name = input_rdkit_mol.GetProp('_Name') if input_rdkit_mol.HasProp('_Name') else '<unnamed>'
+        print(f'Skipping molecule {name}: conformer generation failed: {exc}')
+        return []
     sz = len(rdkit_mol.GetConformers())
     if sz == 0:
         rdkit_mol = copy.deepcopy(input_rdkit_mol)
-        rdkit_mol = Chem.RemoveAllHs(rdkit_mol)
+        rdkit_mol = safe_remove_all_hs(rdkit_mol)
     coord_list = [conf.GetPositions() for conf in rdkit_mol.GetConformers()]
+    if not coord_list:
+        return []
     new_coords = clustering(coord_list, num_classes)
     new_mol_list = [set_coord(copy.deepcopy(rdkit_mol), coord, 0) for coord in new_coords]
     return new_mol_list
