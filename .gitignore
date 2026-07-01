@@ -138,3 +138,6 @@ screening/.ipynb_checkpoints/
 example_data/*_pocket.pdb
 inputs
 test_data
+
+# Local task runners
+run_karmadock_sample10k_carsidock.sh
