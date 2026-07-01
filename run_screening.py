@@ -101,7 +101,7 @@ def main(args):
 #        df = pd.DataFrame(zip(ids, scores), columns=["#code_ligand_num", "score"])
 #        df.to_csv(f"{get_abs_path(args.output_dir)}/{score_filename}", index=False, sep="\t")
 
-    docked_mol = []
+    pending_mol = []
     invalid_count = 0
     all_ids = []
     all_scores = []
@@ -111,8 +111,21 @@ def main(args):
     input_basename = os.path.basename(args.ligands).split('.')[0]
     score_filename = f"{input_basename}_score.dat"
 
-    # 设置每批的大小
+    # 设置每批的大小。每满一批就 scoring 并释放这一批，避免 10k 分子全部留在显存/内存里。
     batch_size = 1000
+    scored_batches = 0
+
+    def score_and_save_batch(mol_batch, batch_label):
+        ids_batch, scores_batch = scoring(rtms_pocket, mol_batch, rtms_model)
+        batch_df = pd.DataFrame({"#code_ligand_num": ids_batch, "score": scores_batch})
+        batch_file = f"{input_basename}_batch_{batch_label}_score.dat"
+        batch_df.to_csv(
+            os.path.join(get_abs_path(args.output_dir), batch_file),
+            index=False,
+            sep="\t"
+        )
+        all_ids.extend(ids_batch)
+        all_scores.extend(scores_batch)
 
     # 分批处理
     for item in tqdm(data, desc="Processing"):
@@ -127,42 +140,22 @@ def main(args):
                 model, carsidock_pocket, init_mol_list, ligand_dict, pocket_dict, device=DEVICE,
                 output_path=output_path, num_threads=args.num_threads, lbfgsbsrv=lbfgsbsrv
             )
-            docked_mol.append(outputs['mol_list'][0])
-        except (IndexError, AttributeError) as e:
+            pending_mol.append(outputs['mol_list'][0])
+        except (IndexError, AttributeError, ValueError) as e:
             invalid_count += 1
             continue
 
-        # 对当前批次进行打分
-        if len(docked_mol) >= 1 and (len(docked_mol) - 1) % batch_size == 0:
-            batch = docked_mol[-batch_size:]
-            ids_batch, scores_batch = scoring(rtms_pocket, batch, rtms_model)
+        if len(pending_mol) >= batch_size:
+            scored_batches += 1
+            score_and_save_batch(pending_mol, scored_batches)
+            pending_mol.clear()
+            torch.cuda.empty_cache()
 
-            # 保存当前批次的临时结果（避免程序崩溃丢失所有数据）
-            batch_file = f"{input_basename}_batch_{len(docked_mol)//batch_size}_score.dat"
-            batch_df = pd.DataFrame({
-                "#code_ligand_num": ids_batch,
-                "score": scores_batch
-            })
-            batch_df.to_csv(
-                os.path.join(get_abs_path(args.output_dir), batch_file),
-                index=False,
-                sep="\t"
-            )
-
-            all_ids.extend(ids_batch)
-            all_scores.extend(scores_batch)
-
-    # 处理剩余分子
-    if (len(docked_mol) - 1) % batch_size != 0:
-        ids, scores = scoring(rtms_pocket, docked_mol[-(len(docked_mol)%batch_size):], rtms_model)
-        batch_df = pd.DataFrame({"#code_ligand_num": ids, "score": scores})
-        batch_file = f"{input_basename}_batch_final_score.dat"
-        try:
-            batch_df.to_csv(os.path.join(get_abs_path(args.output_dir), batch_file), sep="\t", index=False)
-        except Exceptions as e:
-            pass
-        all_ids.extend(ids)
-        all_scores.extend(scores)
+    # 处理剩余不足 batch_size 的分子
+    if pending_mol:
+        score_and_save_batch(pending_mol, "final")
+        pending_mol.clear()
+        torch.cuda.empty_cache()
 
     # 最终合并所有批次的结果
     if args.output_dir and (all_ids and all_scores):
